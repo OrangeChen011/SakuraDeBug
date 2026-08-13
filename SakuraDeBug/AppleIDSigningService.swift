@@ -51,7 +51,10 @@ final class AppleIDSigningService {
                 anisetteData: anisetteData,
                 xcodeVersion: "16.3 (16E140)",
                 verificationHandler: { handler in
-                    Task {
+                    // 关键：AltSign 在 URLSession 后台线程调用 verificationHandler。
+                    // 必须在 MainActor 上读取 UI 状态（@State），否则后台线程访问
+                    // SwiftUI 状态会违反 MainActor 隔离直接闪退（2FA 流程必现）。
+                    Task { @MainActor in
                         handler(await verificationCode())
                     }
                 }

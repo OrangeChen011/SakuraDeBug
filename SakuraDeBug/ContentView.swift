@@ -506,7 +506,8 @@ struct ContentView: View {
         Task {
             do {
                 let authenticatedSession = try await AppleIDSigningService().authenticate(appleID: appleID, password: password, anisetteJSON: anisetteJSON) {
-                    verificationCode.isEmpty ? nil : verificationCode
+                    // 双保险：@State 必须在 MainActor 上读取（verificationHandler 可能从后台线程触发）
+                    await MainActor.run { verificationCode.isEmpty ? nil : verificationCode }
                 }
                 await MainActor.run { session = authenticatedSession; password = ""; isAuthenticating = false }
             } catch {
