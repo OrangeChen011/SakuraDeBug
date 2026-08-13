@@ -59,6 +59,13 @@ struct ContentView: View {
             selfPairing.onLog = { line in
                 appendLog(line)
             }
+            // 上次崩溃残留：提示用户，便于闪退后拿到堆栈定位
+            if let crash = CrashLogger.lastCrashLog() {
+                appendLog("⚠️ 检测到上次崩溃记录，详情已写入 Documents/crash.log（文件共享可导出）：")
+                let lines = crash.split(separator: "\n").prefix(8).map(String.init)
+                for line in lines { appendLog("   \(line)") }
+                CrashLogger.clearCrashLog()
+            }
         }
         .fileImporter(isPresented: $isImportingIPA, allowedContentTypes: [.init(filenameExtension: "ipa") ?? .data], allowsMultipleSelection: false) { result in
             do {
@@ -506,8 +513,9 @@ struct ContentView: View {
         Task {
             do {
                 let authenticatedSession = try await AppleIDSigningService().authenticate(appleID: appleID, password: password, anisetteJSON: anisetteJSON) {
-                    // 双保险：@State 必须在 MainActor 上读取（verificationHandler 可能从后台线程触发）
-                    await MainActor.run { verificationCode.isEmpty ? nil : verificationCode }
+                    // 同步快照验证码：AppleIDSigningService 保证本闭包只在 MainActor 上调用。
+                    // 开了双重认证的账号：先填验证码再点连接（与 AltSign/Xcode 原版逻辑一致）。
+                    verificationCode.isEmpty ? nil : verificationCode
                 }
                 await MainActor.run { session = authenticatedSession; password = ""; isAuthenticating = false }
             } catch {
