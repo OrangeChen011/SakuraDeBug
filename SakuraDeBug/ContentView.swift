@@ -349,8 +349,18 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Apple ID 签名", subtitle: "认证信息只用于当前签名会话")
             if let session {
-                Label(session.account.appleID, systemImage: "checkmark.seal.fill")
-                    .foregroundStyle(.green).font(.headline)
+                HStack {
+                    Label(session.account.appleID, systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green).font(.headline)
+                    Spacer(minLength: 0)
+                    Button("断开连接") {
+                        self.session = nil
+                        password = ""
+                        authError = nil
+                        appendLog("已断开 Apple ID 连接，可重新输入账号密码")
+                    }
+                    .buttonStyle(.bordered).tint(.orange).controlSize(.small)
+                }
             } else {
                 TextField("Apple ID", text: $appleID).textInputAutocapitalization(.never).autocorrectionDisabled().inputStyle()
                 SecureField("密码", text: $password).inputStyle()

@@ -200,9 +200,11 @@ final class SelfPairingController: ObservableObject {
         }
         publishAttempt += 1
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, self.isRunning, self.pendingPublish != nil else { return }
-            self.log("🔄 广播失败，即将自动重试（\(self.publishAttempt + 1)/\(self.maxPublishAttempts)）…")
-            self.publishNow()
+            MainActor.assumeIsolated {
+                guard let self, self.isRunning, self.pendingPublish != nil else { return }
+                self.log("🔄 广播失败，即将自动重试（\(self.publishAttempt + 1)/\(self.maxPublishAttempts)）…")
+                self.publishNow()
+            }
         }
     }
 

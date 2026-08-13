@@ -42,6 +42,9 @@ final class AppleIDSigningService {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
+            // 防重入：AltSign 完成回调若异常触发两次，第二次 resume 会导致
+            // withCheckedThrowingContinuation 崩溃（经典闪退源），这里加锁保护。
+            var resumed = false
             ALTAppleAPI.shared.authenticate(
                 appleID: appleID,
                 password: password,
@@ -53,6 +56,8 @@ final class AppleIDSigningService {
                     }
                 }
             ) { account, session, error in
+                guard !resumed else { return }
+                resumed = true
                 if let account, let session {
                     continuation.resume(returning: AppleIDSession(account: account, session: session))
                 } else {
@@ -75,10 +80,13 @@ final class AppleIDSigningService {
 
         let signer = ALTSigner(team: team, certificate: certificate)
         try await withCheckedThrowingContinuation { continuation in
+            var resumed = false
             let progress = signer.signApp(
                 at: appURL,
                 provisioningProfiles: provisioningProfiles
             ) { success, error in
+                guard !resumed else { return }
+                resumed = true
                 if success {
                     continuation.resume()
                 } else {
