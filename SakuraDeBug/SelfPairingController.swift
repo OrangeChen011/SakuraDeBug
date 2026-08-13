@@ -66,12 +66,13 @@ final class SelfPairingController: ObservableObject {
 
         Task {
             // iOS 14+ 必须先获得本地网络权限，否则 NetService 广播会静默失败。
-            log("检查本地网络权限…（如弹出授权请选择「允许」）")
+            // 注意：只有权限弹窗出现并允许后，「设置 › 本地网络」里才会有 SakuraDeBug 的开关。
+            log("检查本地网络权限…（即将弹出授权弹窗，请务必选择「允许」）")
             let probe = LocalNetworkProbe()
             let authorized = await probe.request(timeout: 10)
             guard authorized else {
                 isRunning = false
-                phase = .failed("本地网络权限未开启。请到「设置 › 隐私与安全性 › 本地网络」打开 SakuraDeBug 的开关后重试。")
+                phase = .failed("本地网络权限未开启。请重新点击开始（让权限弹窗再次弹出）并选择「允许」；若弹窗不出现，请到「设置 › 隐私与安全性 › 本地网络」确认 SakuraDeBug 是否在列表中。")
                 log("❌ 本地网络权限探测失败：NetService 无法广播")
                 return
             }
@@ -209,48 +210,36 @@ final class SelfPairingController: ObservableObject {
     }
 }
 
-// MARK: - 本地网络权限探测（iOS 14+ 无直接查询 API，用 NWListener/NWBrowser 自探测）
+// MARK: - 本地网络权限探测
+//
+// 关键：必须用 NetService 真实发布服务来探测（与最终广播同一套 API）。
+// 不要用 NWListener + includePeerToPeer —— P2P 通道不需要本地网络权限，
+// 探测会"假成功"且不触发系统弹窗，导致「设置 › 本地网络」里根本不出现
+// SakuraDeBug 的开关，后续真正的 mDNS 广播照样失败。
 
 @MainActor
-private final class LocalNetworkProbe {
-    private var browser: NWBrowser?
-    private var listener: NWListener?
+private final class LocalNetworkProbe: NSObject, NetServiceDelegate {
+    private var netService: NetService?
     private var continuation: CheckedContinuation<Bool, Never>?
 
-    private let probeType = "_sakuraprobe._tcp"
+    /// 探测服务类型（已加入 Info.plist 的 NSBonjourServices）
+    private let probeType = "_sakuradebug-probe._tcp"
 
     func request(timeout: TimeInterval = 10) async -> Bool {
         await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             self.continuation = cont
 
-            let params = NWParameters.tcp
-            params.includePeerToPeer = true
-
-            let listener = try? NWListener(using: params)
-            listener?.service = NWListener.Service(name: "SakuraProbe", type: probeType)
-            listener?.newConnectionHandler = { $0.cancel() }
-            listener?.stateUpdateHandler = { [weak self] state in
-                if case .failed = state {
-                    MainActor.assumeIsolated { self?.finish(false) }
-                }
-            }
-            self.listener = listener
-
-            let browser = NWBrowser(for: .bonjour(type: probeType, domain: nil), using: params)
-            browser.stateUpdateHandler = { [weak self] state in
-                if case .failed = state {
-                    MainActor.assumeIsolated { self?.finish(false) }
-                }
-            }
-            browser.browseResultsChangedHandler = { [weak self] results, _ in
-                if !results.isEmpty {
-                    MainActor.assumeIsolated { self?.finish(true) }
-                }
-            }
-            self.browser = browser
-
-            listener?.start(queue: .main)
-            browser.start(queue: .main)
+            // 真实发布一次 Bonjour 服务：未授权时系统弹窗必现，
+            // 授权结果会直接反映在 didPublish / didNotPublish 回调里。
+            // port 传 0 由系统分配，仅作探测用途，探测完立即 stop。
+            let service = NetService(
+                domain: "local.",
+                type: probeType,
+                name: "SakuraDebug-Probe",
+                port: 0)
+            service.delegate = self
+            service.publish()
+            self.netService = service
 
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
                 MainActor.assumeIsolated { self?.finish(false) }
@@ -258,12 +247,22 @@ private final class LocalNetworkProbe {
         }
     }
 
+    nonisolated func netServiceDidPublish(_ sender: NetService) {
+        // 注册成功 = 本地网络权限已授予（或已弹窗且允许）
+        DispatchQueue.main.async { [weak self] in self?.finish(true) }
+    }
+
+    nonisolated func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
+        // 发布失败 = 权限未授予（-72008）或服务名冲突等
+        DispatchQueue.main.async { [weak self] in self?.finish(false) }
+    }
+
     private func finish(_ authorized: Bool) {
         guard let cont = continuation else { return }
         continuation = nil
         cont.resume(returning: authorized)
-        browser?.cancel(); browser = nil
-        listener?.cancel(); listener = nil
+        netService?.stop()
+        netService = nil
     }
 }
 
