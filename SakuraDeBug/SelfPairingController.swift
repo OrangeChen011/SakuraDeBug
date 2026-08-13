@@ -22,12 +22,9 @@ final class SelfPairingController: ObservableObject {
 
     private init() {
         netServiceDelegate.onLog = { [weak self] line in self?.log(line) }
-        netServiceDelegate.onPublishFailed = { [weak self] line in
+        netServiceDelegate.onPublishFailed = { [weak self] line, code in
             self?.log(line)
-            if self?.isRunning == true {
-                self?.isRunning = false
-                self?.phase = .failed("Bonjour 广播失败，配对主机不可被发现。请查看日志。")
-            }
+            self?.handlePublishFailure(code: code)
         }
     }
 
@@ -53,6 +50,18 @@ final class SelfPairingController: ObservableObject {
     private var netService: NetService?
     private let netServiceDelegate = NetServiceDelegateObject()
     private(set) var isRunning = false
+
+    /// 待广播参数（C 库就绪回调后缓存，失败重试时复用）
+    private struct PendingPublish {
+        let serviceID: String
+        let port: Int32
+        let txt: [String: Data]
+    }
+    private var pendingPublish: PendingPublish?
+    /// 当前广播尝试次数（0 起；超过 maxPublishAttempts 判失败）
+    private var publishAttempt = 0
+    /// 广播失败自动重试上限（mDNS 名字冲突 -72001 / 网络瞬断可自愈）
+    private let maxPublishAttempts = 3
 
     var isAdvertising: Bool { netService != nil }
 
@@ -83,8 +92,9 @@ final class SelfPairingController: ObservableObject {
 
     func reset() {
         guard !isRunning else { return }
-        netService?.stop()
-        netService = nil
+        stopAdvertising()
+        pendingPublish = nil
+        publishAttempt = 0
         phase = .idle
         deviceName = ""
         deviceUDID = ""
@@ -146,20 +156,54 @@ final class SelfPairingController: ObservableObject {
 
     private func startAdvertising(serviceID: String, port: Int32, txt: [String: Data]) {
         stopAdvertising()
+        publishAttempt = 0
+        pendingPublish = PendingPublish(serviceID: serviceID, port: port, txt: txt)
+        publishNow()
+    }
+
+    /// 执行一次 NetService 发布。重试时服务名追加序号，避免 mDNS 名字冲突（-72001）。
+    private func publishNow() {
+        guard let pending = pendingPublish else { return }
+        let name: String
+        if publishAttempt == 0 {
+            name = pending.serviceID
+        } else {
+            name = "\(pending.serviceID)-\(publishAttempt + 1)"
+        }
         let service = NetService(
             domain: "",
             type: "_remotepairing-pairable-host._tcp.",
-            name: serviceID,
-            port: port)
-        service.setTXTRecord(NetService.data(fromTXTRecord: txt))
+            name: name,
+            port: pending.port)
+        service.setTXTRecord(NetService.data(fromTXTRecord: pending.txt))
         service.delegate = netServiceDelegate
         service.publish()
         netService = service
+        log("📡 正在广播 \(name)（端口 \(pending.port)，第 \(publishAttempt + 1)/\(maxPublishAttempts) 次尝试）…")
     }
 
     private func stopAdvertising() {
+        // 先摘掉 delegate 再 stop：避免我们主动停止时误触发 didNotPublish（-72005 已取消）
+        netService?.delegate = nil
         netService?.stop()
         netService = nil
+    }
+
+    /// 广播发布失败：未达上限则短暂等待后重试；达上限才判失败。
+    private func handlePublishFailure(code: Int) {
+        guard isRunning else { return }
+        guard publishAttempt < maxPublishAttempts - 1 else {
+            isRunning = false
+            pendingPublish = nil
+            phase = .failed("Bonjour 广播失败（错误码 \(code)），配对主机不可被发现。请查看日志。")
+            return
+        }
+        publishAttempt += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.isRunning, self.pendingPublish != nil else { return }
+            self.log("🔄 广播失败，即将自动重试（\(self.publishAttempt + 1)/\(self.maxPublishAttempts)）…")
+            self.publishNow()
+        }
     }
 
     private func presentPin(_ pin: String) {
@@ -190,6 +234,9 @@ final class SelfPairingController: ObservableObject {
 
         DispatchQueue.main.async {
             controller.log("📡 配对主机就绪：service=\(id)，端口=\(port)，TXT={\(txtPreview)}")
+            if port <= 0 || port > 65535 {
+                controller.log("⚠️ C 库返回非法端口 \(port)，Bonjour 广播可能失败（参数错误 -72004）")
+            }
             controller.log("若「开发者模式」列表里没有 SakuraDeBug：请确认系统为 iOS 27+，且已允许本地网络权限")
             controller.startAdvertising(serviceID: id, port: Int32(port), txt: txt)
         }
@@ -270,25 +317,29 @@ private final class LocalNetworkProbe: NSObject, NetServiceDelegate {
 
 private final class NetServiceDelegateObject: NSObject, NetServiceDelegate {
     var onLog: ((String) -> Void)?
-    var onPublishFailed: ((String) -> Void)?
+    var onPublishFailed: ((String, Int) -> Void)?
 
     func netServiceDidPublish(_ sender: NetService) {
         onLog?("✅ Bonjour 广播成功：\(sender.name)（端口 \(sender.port)）")
     }
 
     func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
-        let code = errorDict[NetService.errorCode]?.intValue ?? -72000
-        let info: String
+        // 完整错误字典（含 NSLocalizedDescription 等），避免 -72000 撞码 Apple GSA 认证错误
+        let details = errorDict.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
+        let code = errorDict[NetService.errorCode]?.intValue
+        let codeDesc: String
         switch code {
-        case -72001: info = "服务名冲突"
-        case -72002: info = "未找到"
-        case -72004: info = "参数错误"
-        case -72005: info = "已取消"
-        case -72006: info = "无效"
-        case -72007: info = "超时"
-        case -72008: info = "缺少必要配置（本地网络权限被拒时常见）"
-        default: info = "错误码 \(code)"
+        case -72001: codeDesc = "服务名冲突"
+        case -72002: codeDesc = "未找到"
+        case -72004: codeDesc = "参数错误"
+        case -72005: codeDesc = "已取消"
+        case -72006: codeDesc = "无效"
+        case -72007: codeDesc = "超时"
+        case -72008: codeDesc = "缺少必要配置（本地网络权限被拒时常见）"
+        case let c?: codeDesc = "错误码 \(c)"
+        case nil: codeDesc = "未知错误"
         }
-        onPublishFailed?("❌ Bonjour 发布失败：\(info)")
+        let line = "❌ Bonjour 发布失败：\(codeDesc)（errorDict=[\(details)]）"
+        onPublishFailed?(line, code ?? 0)
     }
 }
