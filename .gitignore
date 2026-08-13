@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# CocoaPods
+Pods/
+
+# 编译产物
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.app
+
+# 本地残留文件
+SakuraDeBug/Assets.xcassets/AppIcon.appiconset/AppIcon_副本.png
+
+# 工作区私有数据（AI 工作记忆，不入库）
+.workbuddy/

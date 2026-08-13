@@ -1,0 +1,5 @@
+module idevice [system] {
+  header "idevice.h"
+  link "idevice_ffi"
+  export *
+}
