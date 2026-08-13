@@ -56,6 +56,9 @@ struct ContentView: View {
         .preferredColorScheme(.light)
         .onAppear {
             hasPairingFile = PairingFileStore.hasPairingFile
+            selfPairing.onLog = { line in
+                appendLog(line)
+            }
         }
         .fileImporter(isPresented: $isImportingIPA, allowedContentTypes: [.init(filenameExtension: "ipa") ?? .data], allowsMultipleSelection: false) { result in
             do {

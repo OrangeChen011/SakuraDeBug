@@ -13,6 +13,9 @@ xcuserdata/
 .build/
 .swiftpm/
 
+# 本地依赖锁定文件（AltSign 为本地 path 依赖，Package.resolved 由 Xcode 按需生成）
+SakuraDeBug.xcodeproj/project.xcworkspace/xcshareddata/
+
 # CocoaPods
 Pods/
 
