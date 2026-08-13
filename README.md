@@ -13,6 +13,7 @@
 - ⚡ **JIT 启用**：通过 LocalDevVPN 回环隧道 + debugserver 附加启用 JIT
 - 🔐 **配对文件管理**：导入/管理设备配对文件
 - 🧬 **USB 一键生成配对文件**：无需从其他电脑导出，USB 连上设备即可直接配对并生成配对文件（参考 StikPair）
+- 📡 **设备自配对（无需电脑）**：本机伪装成配对主机，在「设置 › 开发者模式」里直接与本机配对，全程不经过电脑（参考 StikPair）
 
 ## 系统要求
 
@@ -30,8 +31,9 @@
 
 ## 使用流程
 
-1. **获取配对文件（二选一）**：
-   - **USB 一键生成（推荐）**：数据线连接设备（解锁 + 开启开发者模式），在应用里点击「USB 生成」，应用通过 CoreDeviceProxy USB 隧道完成配对并自动生成配对文件
+1. **获取配对文件（三选一）**：
+   - **设备自配对（推荐，无需电脑）**：点「开始自配对」，按提示到本机「设置 › 隐私与安全 › 开发者模式」选择 SakuraDeBug 并输入应用内显示的 PIN，配对文件自动生成
+   - **USB 一键生成**：数据线连接设备（解锁 + 开启开发者模式），在应用里点击「USB 生成」，应用通过 CoreDeviceProxy USB 隧道完成配对并自动生成配对文件
    - **导入现有配对文件**：从已与设备建立信任的电脑导出配对文件（如 `usbmuxd` 的配对记录），在应用中导入
 2. **导入 IPA**：选择要调试的 `.ipa` 文件
 3. **登录 Apple ID**：输入 Apple ID 与密码（也可导入 Anisette JSON），对应用签名
@@ -51,9 +53,15 @@ JIT 启用核心链路（移植自 [StikDebug/StikJIT](https://github.com/StikDe
 配对文件生成链路（参考 StikPair / jkcoxson/idevice_pair）：
 
 ```
+USB 一键生成：
 usbmuxd 枚举 USB 设备 → usbmuxd_provider_new 建立设备连接
 → tunnel_pair_usb 走 CoreDeviceProxy USB 隧道 + RPPairing 协议配对
 → rp_pairing_file_write 输出配对文件（与 JIT 隧道的 tunnel_create_rppairing 完全兼容）
+
+设备自配对（无需电脑）：
+App 本机伪装为 PairableHost（RPPairing 配对主机）→ NetService 广播 _remotepairing-pairable-host._tcp.
+→ 在「设置 › 开发者模式」选择 SakuraDeBug 并发起配对 → 输入 App 内显示的 PIN
+→ RPPairing 握手完成 → 配对文件直接写入标准位置，JIT 立即可用
 ```
 
 ## 致谢

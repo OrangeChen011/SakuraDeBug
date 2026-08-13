@@ -3,3 +3,9 @@ module idevice [system] {
   link "idevice_ffi"
   export *
 }
+
+module StikPairFFI [system] {
+  header "stikpair.h"
+  link "stikpair_ffi"
+  export *
+}

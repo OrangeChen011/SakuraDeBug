@@ -32,6 +32,7 @@ struct ContentView: View {
     @State private var pairingImportError: String?
     @State private var isGeneratingPairing = false
     @State private var pairingGenerateError: String?
+    @ObservedObject private var selfPairing = SelfPairingController.shared
 
     var body: some View {
         ZStack {
@@ -117,6 +118,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("开启 JIT", subtitle: "通过配对文件 + LocalDevVPN 回环隧道附加调试器")
             pairingRow
+            selfPairingRow
             prerequisitesRow
             refreshRow
             if let appsError {
@@ -167,6 +169,82 @@ struct ContentView: View {
             }
             if let pairingGenerateError {
                 Text(pairingGenerateError).font(.footnote).foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var selfPairingRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label("设备自配对", systemImage: "antenna.radiowaves.left.and.right")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.sakuraDeep)
+                Spacer(minLength: 0)
+                if case .showPin = selfPairing.phase {
+                    Text("输入 PIN")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(.sakuraPink.opacity(0.15), in: Capsule())
+                        .foregroundStyle(.sakuraPink)
+                }
+            }
+            Text("不需要电脑：SakuraDeBug 在本机伪装成配对主机（Mac），打开后到「设置 › 隐私与安全 › 开发者模式」选择 SakuraDeBug 并输入下方 PIN，配对文件自动生成。")
+                .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.6))
+
+            switch selfPairing.phase {
+            case .idle:
+                Button {
+                    startSelfPairing()
+                } label: {
+                    Label("开始自配对", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(.sakuraPink)
+                .disabled(selfPairing.isRunning)
+
+            case .waiting:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("广播中… 请到本机「设置 › 开发者模式」选择 SakuraDeBug 并发起配对")
+                        .font(.caption).foregroundStyle(.sakuraInk.opacity(0.7))
+                }
+
+            case .showPin(let pin):
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("在「设置 › 开发者模式」中输入配对码：")
+                        .font(.caption).foregroundStyle(.sakuraInk.opacity(0.7))
+                    Text(pin)
+                        .font(.system(size: 34, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.sakuraPink)
+                        .tracking(8)
+                    ProgressView().controlSize(.small)
+                        .padding(.top, 2)
+                }
+
+            case .success:
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("配对成功，配对文件已生成！", systemImage: "checkmark.seal.fill")
+                        .font(.caption.bold()).foregroundStyle(.green)
+                    if !selfPairing.deviceName.isEmpty {
+                        Text("设备：\(selfPairing.deviceName)（\(selfPairing.deviceUDID)）")
+                            .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.6))
+                    }
+                    Button {
+                        refreshApps()
+                    } label: {
+                        Label("刷新 App 列表", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered).tint(.sakuraDeep).controlSize(.small)
+                }
+
+            case .failed(let message):
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(message).font(.footnote).foregroundStyle(.red)
+                    Button("重试") { startSelfPairing() }
+                        .buttonStyle(.bordered).tint(.sakuraPink).controlSize(.small)
+                }
             }
         }
     }
@@ -316,6 +394,12 @@ struct ContentView: View {
     }
 
     // MARK: - 动作
+
+    private func startSelfPairing() {
+        guard !selfPairing.isRunning else { return }
+        appendLog("开始设备自配对（本机伪装为配对主机，无需电脑）…")
+        selfPairing.start()
+    }
 
     private func generatePairingFile() {
         isGeneratingPairing = true
