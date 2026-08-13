@@ -12,6 +12,7 @@
 - 📲 **设备连接**：通过 idevice 与 iOS 设备配对、通信
 - ⚡ **JIT 启用**：通过 LocalDevVPN 回环隧道 + debugserver 附加启用 JIT
 - 🔐 **配对文件管理**：导入/管理设备配对文件
+- 🧬 **USB 一键生成配对文件**：无需从其他电脑导出，USB 连上设备即可直接配对并生成配对文件（参考 StikPair）
 
 ## 系统要求
 
@@ -29,7 +30,9 @@
 
 ## 使用流程
 
-1. **导入配对文件**：从你的电脑与设备建立信任后，导出配对文件（如 `usbmuxd` 的配对记录），在应用中导入
+1. **获取配对文件（二选一）**：
+   - **USB 一键生成（推荐）**：数据线连接设备（解锁 + 开启开发者模式），在应用里点击「USB 生成」，应用通过 CoreDeviceProxy USB 隧道完成配对并自动生成配对文件
+   - **导入现有配对文件**：从已与设备建立信任的电脑导出配对文件（如 `usbmuxd` 的配对记录），在应用中导入
 2. **导入 IPA**：选择要调试的 `.ipa` 文件
 3. **登录 Apple ID**：输入 Apple ID 与密码（也可导入 Anisette JSON），对应用签名
 4. **连接设备并启用 JIT**：应用会通过 RSD 回环隧道与设备通信，启动目标 App 并通过 debugserver 附加，随后 detach，保留 `CS_DEBUGGED` 标志使 JIT 保持开启
@@ -45,11 +48,20 @@ JIT 启用核心链路（移植自 [StikDebug/StikJIT](https://github.com/StikDe
 → debugserver 发送 vAttach;<pidhex> 附加 → 发送 D detach（保留 CS_DEBUGGED 标志）
 ```
 
+配对文件生成链路（参考 StikPair / jkcoxson/idevice_pair）：
+
+```
+usbmuxd 枚举 USB 设备 → usbmuxd_provider_new 建立设备连接
+→ tunnel_pair_usb 走 CoreDeviceProxy USB 隧道 + RPPairing 协议配对
+→ rp_pairing_file_write 输出配对文件（与 JIT 隧道的 tunnel_create_rppairing 完全兼容）
+```
+
 ## 致谢
 
 - [jkcoxson/idevice](https://github.com/jkcoxson/idevice) — iOS 设备通信库（MIT）
 - [AltSign](https://github.com/rileytestut/AltSign) — Apple ID 签名
 - [StikDebug/StikJIT](https://github.com/StikDebug/StikJIT) — JIT 启用逻辑参考
+- [StikDebug/StikPair](https://github.com/StikDebug/StikPair) — 配对文件生成思路参考
 
 ## 许可证
 

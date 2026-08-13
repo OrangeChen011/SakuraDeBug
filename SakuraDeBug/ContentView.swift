@@ -30,6 +30,8 @@ struct ContentView: View {
     @State private var logLines: [String] = []
     @State private var activeJITBundleID: String?
     @State private var pairingImportError: String?
+    @State private var isGeneratingPairing = false
+    @State private var pairingGenerateError: String?
 
     var body: some View {
         ZStack {
@@ -136,18 +138,36 @@ struct ContentView: View {
     }
 
     private var pairingRow: some View {
-        HStack(spacing: 10) {
-            Label(
-                hasPairingFile ? "配对文件已就绪" : "未导入配对文件",
-                systemImage: hasPairingFile ? "checkmark.shield.fill" : "exclamationmark.shield.fill"
-            )
-            .font(.subheadline)
-            .foregroundStyle(hasPairingFile ? .green : .orange)
-            Spacer(minLength: 0)
-            Button(hasPairingFile ? "更换" : "导入") {
-                isImportingPairing = true
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label(
+                    hasPairingFile ? "配对文件已就绪" : "未导入配对文件",
+                    systemImage: hasPairingFile ? "checkmark.shield.fill" : "exclamationmark.shield.fill"
+                )
+                .font(.subheadline)
+                .foregroundStyle(hasPairingFile ? .green : .orange)
+                Spacer(minLength: 0)
+                Button(hasPairingFile ? "更换" : "导入") {
+                    isImportingPairing = true
+                }
+                .buttonStyle(.bordered).tint(.sakuraDeep).controlSize(.small)
             }
-            .buttonStyle(.bordered).tint(.sakuraDeep).controlSize(.small)
+            HStack(spacing: 10) {
+                Text("没有配对文件？USB 连上设备后一键生成（参考 StikPair）。")
+                    .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.55))
+                Spacer(minLength: 0)
+                Button {
+                    generatePairingFile()
+                } label: {
+                    Label(isGeneratingPairing ? "生成中…" : "USB 生成", systemImage: "arrow.triangle.branch")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.borderedProminent).tint(.sakuraPink).controlSize(.small)
+                .disabled(isGeneratingPairing)
+            }
+            if let pairingGenerateError {
+                Text(pairingGenerateError).font(.footnote).foregroundStyle(.red)
+            }
         }
     }
 
@@ -296,6 +316,31 @@ struct ContentView: View {
     }
 
     // MARK: - 动作
+
+    private func generatePairingFile() {
+        isGeneratingPairing = true
+        pairingGenerateError = nil
+        appendLog("开始生成配对文件…")
+        Task.detached(priority: .userInitiated) {
+            do {
+                try PairingGenerator.shared.generatePairingFile { line in
+                    DispatchQueue.main.async { appendLog(line) }
+                }
+                DispatchQueue.main.async {
+                    hasPairingFile = PairingFileStore.hasPairingFile
+                    isGeneratingPairing = false
+                    pairingGenerateError = nil
+                    refreshApps()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    pairingGenerateError = error.localizedDescription
+                    isGeneratingPairing = false
+                    appendLog("❌ \(error.localizedDescription)")
+                }
+            }
+        }
+    }
 
     private func refreshApps() {
         guard hasPairingFile else {
