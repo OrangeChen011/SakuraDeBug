@@ -5,6 +5,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct ContentView: View {
     @State private var result: JITCheckResult?
@@ -33,6 +34,9 @@ struct ContentView: View {
     @State private var isGeneratingPairing = false
     @State private var pairingGenerateError: String?
     @ObservedObject private var selfPairing = SelfPairingController.shared
+    // 局域网网页控制台
+    @State private var webConsoleOn = false
+    @StateObject private var webConsole = WebConsoleServer.shared
 
     var body: some View {
         ZStack {
@@ -65,6 +69,15 @@ struct ContentView: View {
                 let lines = crash.split(separator: "\n").prefix(8).map(String.init)
                 for line in lines { appendLog("   \(line)") }
                 CrashLogger.clearCrashLog()
+            }
+        }
+        .onChange(of: webConsoleOn) { _, on in
+            if on {
+                webConsole.start()
+                appendLog("🌐 正在启动网页控制台（端口 8080，占用自动顺延）…")
+            } else {
+                webConsole.stop()
+                appendLog("网页控制台已关闭")
             }
         }
         .fileImporter(isPresented: $isImportingIPA, allowedContentTypes: [.init(filenameExtension: "ipa") ?? .data], allowsMultipleSelection: false) { result in
@@ -129,6 +142,7 @@ struct ContentView: View {
             sectionTitle("开启 JIT", subtitle: "通过配对文件 + LocalDevVPN 回环隧道附加调试器")
             pairingRow
             selfPairingRow
+            webConsoleRow
             prerequisitesRow
             refreshRow
             if let appsError {
@@ -264,6 +278,51 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var webConsoleRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label("局域网网页控制台", systemImage: "globe")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.sakuraDeep)
+                Spacer(minLength: 0)
+                Toggle("", isOn: $webConsoleOn)
+                    .labelsHidden()
+                    .tint(.sakuraPink)
+            }
+            if webConsoleOn {
+                if let url = webConsole.accessURL {
+                    HStack(spacing: 8) {
+                        Text(url)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.sakuraDeep)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                        Button {
+                            UIPasteboard.general.string = url
+                            appendLog("📋 控制台地址已复制：\(url)")
+                        } label: {
+                            Label("复制", systemImage: "doc.on.doc")
+                                .font(.caption.bold())
+                        }
+                        .buttonStyle(.bordered).tint(.sakuraPink).controlSize(.small)
+                    }
+                    Text("用电脑浏览器打开上面的地址，可实时查看配对状态、PIN 码、日志并下载配对文件。仅限同一 WiFi 的可信设备访问。")
+                        .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.6))
+                } else {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("控制台启动中…")
+                            .font(.caption).foregroundStyle(.sakuraInk.opacity(0.6))
+                    }
+                }
+            } else {
+                Text("开启后，同一 WiFi 下的电脑浏览器可实时查看自配对状态、PIN 码并下载配对文件。")
+                    .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.6))
+            }
+        }
+        .padding(.top, 2)
     }
 
     private var prerequisitesRow: some View {

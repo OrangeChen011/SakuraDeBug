@@ -37,6 +37,9 @@ final class SelfPairingController: ObservableObject {
     /// 日志回调（由 ContentView 绑定到日志区，方便排查）
     var onLog: ((String) -> Void)?
 
+    /// 日志历史（最近 500 条，供网页控制台读取）
+    private(set) var logHistory: [String] = []
+
     private let bindAddress = "0.0.0.0"
     private let hostName = "SakuraDeBug"
     private let hostModel = "Mac17,7"
@@ -191,6 +194,10 @@ final class SelfPairingController: ObservableObject {
     }
 
     private func log(_ line: String) {
+        logHistory.append(line)
+        if logHistory.count > 500 {
+            logHistory.removeFirst(logHistory.count - 500)
+        }
         onLog?(line)
     }
 
