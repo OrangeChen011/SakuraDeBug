@@ -240,13 +240,20 @@ struct ContentView: View {
                         Text("设备：\(selfPairing.deviceName)（\(selfPairing.deviceUDID)）")
                             .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.6))
                     }
-                    Button {
-                        refreshApps()
-                    } label: {
-                        Label("刷新 App 列表", systemImage: "arrow.clockwise")
-                            .frame(maxWidth: .infinity)
+                    HStack(spacing: 8) {
+                        ShareLink(item: PairingFileStore.url) {
+                            Label("分享/保存", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered).tint(.sakuraPink).controlSize(.small)
+                        Button {
+                            refreshApps()
+                        } label: {
+                            Label("刷新列表", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered).tint(.sakuraDeep).controlSize(.small)
                     }
-                    .buttonStyle(.bordered).tint(.sakuraDeep).controlSize(.small)
                 }
 
             case .failed(let message):
