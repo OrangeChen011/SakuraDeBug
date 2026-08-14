@@ -106,7 +106,10 @@ final class AppleIDSigningService {
         }
 
         let signer = ALTSigner(team: team, certificate: certificate)
-        try await withCheckedThrowingContinuation { continuation in
+        // 显式标注 CheckedContinuation<Void, Error>：resume() 的 Void 特例在
+        // 嵌套函数内不会反向推断 T（Swift 类型推断限制，GUI Xcode 实测报
+        // "Generic parameter 'T' could not be inferred"），显式指定即可消除。
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             // 与 authenticate 相同的线程安全防重入（签名进度回调 + 完成回调
             // 可能从多个线程触发，双重 resume 会闪退）
             let lock = NSLock()
