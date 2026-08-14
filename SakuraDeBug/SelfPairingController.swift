@@ -62,6 +62,8 @@ final class SelfPairingController: ObservableObject {
     private var publishAttempt = 0
     /// 广播失败自动重试上限（mDNS 名字冲突 -72001 / 网络瞬断可自愈）
     private let maxPublishAttempts = 3
+    /// -72000 连续失败计数（≥2 次判定为 AP 隔离，给出针对性提示）
+    private var apiFailureCount = 0
 
     var isAdvertising: Bool { netService != nil }
 
@@ -71,6 +73,7 @@ final class SelfPairingController: ObservableObject {
         phase = .waiting
         deviceName = ""
         deviceUDID = ""
+        apiFailureCount = 0
         log("开始设备自配对（本机伪装为 Mac 配对主机，无需电脑）…")
 
         Task {
@@ -95,6 +98,7 @@ final class SelfPairingController: ObservableObject {
         stopAdvertising()
         pendingPublish = nil
         publishAttempt = 0
+        apiFailureCount = 0
         phase = .idle
         deviceName = ""
         deviceUDID = ""
@@ -157,6 +161,7 @@ final class SelfPairingController: ObservableObject {
     private func startAdvertising(serviceID: String, port: Int32, txt: [String: Data]) {
         stopAdvertising()
         publishAttempt = 0
+        apiFailureCount = 0
         pendingPublish = PendingPublish(serviceID: serviceID, port: port, txt: txt)
         publishNow()
     }
@@ -192,10 +197,37 @@ final class SelfPairingController: ObservableObject {
     /// 广播发布失败：未达上限则短暂等待后重试；达上限才判失败。
     private func handlePublishFailure(code: Int) {
         guard isRunning else { return }
+
+        // -72000（未知错误）连续出现 = 网络 AP 隔离的典型特征：
+        // iOS 本地注册成功（didPublish）后立即被网络层撤销（didNotPublish）。
+        // 酒店 / 机场 / 企业 WiFi 几乎都开启了客户端隔离，mDNS 广播包被路由器丢弃。
+        if code == -72000 {
+            apiFailureCount += 1
+        }
+
         guard publishAttempt < maxPublishAttempts - 1 else {
             isRunning = false
             pendingPublish = nil
-            phase = .failed("Bonjour 广播失败（错误码 \(code)），配对主机不可被发现。请查看日志。")
+            let msg: String
+            if apiFailureCount >= 2 {
+                // 连续 2+ 次 -72000 → 几乎可以确定是 AP 隔离
+                msg = """
+                    Bonjour 广播被网络拦截（连续 \(apiFailureCount) 次 -72000）。
+
+                    ⚠️ 当前 WiFi 可能开启了 AP 隔离（酒店 / 机场 / 企业网常见），设备间无法互相发现。
+
+                    解决方案（任选其一）：
+                    ① 换一个没有 AP 隔离的 WiFi（家用宽带、手机热点）
+                    ② 用另一台手机开热点，本机连热点后再试
+                    ③ 如果有 Mac：Mac 开热点（系统设置 → 通用 → 共享 → 互联网共享），本机连 Mac 热点
+                    ④ 用 USB 配对（不需要网络，最可靠）
+                    """
+            } else if code == -72008 {
+                msg = "本地网络权限被拒绝。请到「设置 › 隐私与安全性 › 本地网络」打开 SakuraDeBug 的开关后重试。"
+            } else {
+                msg = "Bonjour 广播失败（错误码 \(code)），配对主机不可被发现。请查看日志。"
+            }
+            phase = .failed(msg)
             return
         }
         publishAttempt += 1
