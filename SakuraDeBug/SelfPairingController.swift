@@ -171,15 +171,15 @@ final class SelfPairingController: ObservableObject {
             name = "\(pending.serviceID)-\(publishAttempt + 1)"
         }
         let service = NetService(
-            domain: "",
-            type: "_remotepairing-pairable-host._tcp.",
+            domain: "local.",
+            type: "_remotepairing-pairable-host._tcp",
             name: name,
             port: pending.port)
         service.setTXTRecord(NetService.data(fromTXTRecord: pending.txt))
         service.delegate = netServiceDelegate
         service.publish()
         netService = service
-        log("📡 正在广播 \(name)（端口 \(pending.port)，第 \(publishAttempt + 1)/\(maxPublishAttempts) 次尝试）…")
+        log("📡 正在广播 \(name)（类型 \(service.type)，域 \(service.domain)，端口 \(pending.port)，第 \(publishAttempt + 1)/\(maxPublishAttempts) 次尝试）…")
     }
 
     private func stopAdvertising() {
@@ -322,7 +322,7 @@ private final class NetServiceDelegateObject: NSObject, NetServiceDelegate {
     var onPublishFailed: ((String, Int) -> Void)?
 
     func netServiceDidPublish(_ sender: NetService) {
-        onLog?("✅ Bonjour 广播成功：\(sender.name)（端口 \(sender.port)）")
+        onLog?("✅ Bonjour 广播成功：\(sender.name)（类型 \(sender.type)，域 \(sender.domain)，端口 \(sender.port)）")
     }
 
     func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
