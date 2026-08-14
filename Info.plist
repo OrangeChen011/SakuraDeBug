@@ -10,15 +10,5 @@
 		<string>_remotepairing-manual-pairing._tcp</string>
 		<string>_sakuradebug-probe._tcp</string>
 	</array>
-	<!-- 后台任务标识（BGContinuedProcessingTask）：用户切到「设置」配对时保持 App 存活 -->
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>$(PRODUCT_BUNDLE_IDENTIFIER).pairing</string>
-	</array>
-	<!-- 后台模式：音频保活（配对期间播放静音音频防止 App 被挂起） -->
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-	</array>
 </dict>
 </plist>

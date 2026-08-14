@@ -11,10 +11,10 @@
 //  开发者模式页面没有 PairableHost 配对入口。
 //
 
-import BackgroundTasks
 import Foundation
 import Network
 import StikPairFFI
+import UIKit
 
 @MainActor
 final class SelfPairingController: ObservableObject {
@@ -45,27 +45,11 @@ final class SelfPairingController: ObservableObject {
     private let localNetwork = LocalNetworkAuthorization()
     private(set) var isRunning = false
 
-    // MARK: - 后台任务（用户切到「设置」配对时保持 App 存活）
-
-    private var bgTask: BGContinuedProcessingTask?
+    /// beginBackgroundTask 标识符（用户切到「设置」配对时保持 App 存活）
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var pairingStarted = false
-    private var taskFinished = false
 
     private init() {}
-
-    // MARK: - 后台任务注册（App 启动时调用一次）
-
-    nonisolated func registerBackgroundTask() {
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: SelfPairingController.taskIdentifier,
-            using: DispatchQueue.main
-        ) { task in
-            guard let task = task as? BGContinuedProcessingTask else { return }
-            MainActor.assumeIsolated {
-                SelfPairingController.shared.runPairing(task: task)
-            }
-        }
-    }
 
     // MARK: - 对外接口
 
@@ -86,7 +70,8 @@ final class SelfPairingController: ObservableObject {
                 return
             }
             log("✅ 本地网络权限正常，启动配对主机并广播…")
-            submitBackgroundTask()
+            beginBackgroundTaskIfNeeded()
+            runPairing()
         }
     }
 
@@ -98,46 +83,12 @@ final class SelfPairingController: ObservableObject {
         deviceUDID = ""
     }
 
-    // MARK: - 后台任务提交
-
-    private func submitBackgroundTask() {
-        let request = BGContinuedProcessingTaskRequest(
-            identifier: SelfPairingController.taskIdentifier,
-            title: "SakuraDeBug",
-            subtitle: "等待设备连接配对…")
-        request.strategy = .queue
-
-        do {
-            try BGTaskScheduler.shared.submit(request)
-            // 3 秒内后台任务未启动 → 直接前台运行（与 StikPair 一致）
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                guard let self, !self.pairingStarted else { return }
-                self.runPairing(task: nil)
-            }
-        } catch {
-            log("⚠️ 后台任务提交失败（\(error.localizedDescription)），直接前台运行")
-            runPairing(task: nil)
-        }
-    }
-
     // MARK: - 配对主机（阻塞，后台线程）
 
-    private func runPairing(task: BGContinuedProcessingTask?) {
+    private func runPairing() {
         guard !pairingStarted else { return }
         pairingStarted = true
-        taskFinished = false
-        bgTask = task
-
-        task?.progress.totalUnitCount = 100
-        task?.progress.completedUnitCount = 5
-        task?.expirationHandler = { [weak self] in
-            guard let self else { return }
-            self.finishTask(success: false)
-            if self.isRunning {
-                self.phase = .failed("后台运行时间已用完，设备未在规定时间内连接。请重新点击开始配对。")
-                self.log("⏰ 后台运行时间到期")
-            }
-        }
+        isRunning = true
 
         // 确保配对文件输出目录存在（Application Support/Pairing）
         _ = PairingFileStore.prepareURL()
@@ -176,28 +127,39 @@ final class SelfPairingController: ObservableObject {
                 self.stopAdvertising()
                 self.isRunning = false
                 self.pairingStarted = false
+                self.endBackgroundTaskIfNeeded()
                 if success {
                     _ = PairingFileStore.prepareURL()
                     self.deviceName = deviceName
                     self.deviceUDID = deviceUDID
                     self.phase = .success
                     self.log("🎉 配对成功！设备：\(deviceName.isEmpty ? "未知" : deviceName)（\(deviceUDID)），配对文件已生成")
-                    self.bgTask?.progress.completedUnitCount = 100
                 } else {
                     let msg = errorMsg.isEmpty ? "配对失败（code \(rc)）" : errorMsg
                     self.phase = .failed(msg)
                     self.log("❌ \(msg)")
                 }
-                self.finishTask(success: success)
             }
         }
     }
 
-    private func finishTask(success: Bool) {
-        guard !taskFinished else { return }
-        taskFinished = true
-        bgTask?.setTaskCompleted(success: success)
-        bgTask = nil
+    // MARK: - 后台保活（beginBackgroundTask）
+
+    private func beginBackgroundTaskIfNeeded() {
+        guard backgroundTaskID == .invalid else { return }
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "SakuraDeBugPairing") { [weak self] in
+            guard let self else { return }
+            self.backgroundTaskID = .invalid
+            if self.isRunning {
+                self.log("⏰ 后台运行时间到期，配对可能中断。请保持 App 在前台或重新点击开始配对。")
+            }
+        }
+    }
+
+    private func endBackgroundTaskIfNeeded() {
+        guard backgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTaskID)
+        backgroundTaskID = .invalid
     }
 
     // MARK: - 广播 / PIN
@@ -225,8 +187,6 @@ final class SelfPairingController: ObservableObject {
 
     private func presentPin(_ pin: String) {
         phase = .showPin(pin)
-        bgTask?.progress.completedUnitCount = 50
-        bgTask?.updateTitle("SakuraDeBug", subtitle: "在本机输入配对码 \(pin)")
         log("🔢 请到「设置 › 隐私与安全 › 开发者模式」选择 SakuraDeBug 并输入配对码：\(pin)")
     }
 
