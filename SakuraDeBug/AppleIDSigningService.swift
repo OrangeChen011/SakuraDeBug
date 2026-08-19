@@ -9,6 +9,8 @@ import AltSign
 enum AppleIDSigningError: LocalizedError {
     case invalidApplication
     case invalidAnisette
+    case noTeam
+    case certificateLimitReached
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +18,10 @@ enum AppleIDSigningError: LocalizedError {
             return "IPA 中没有找到有效的 App bundle。"
         case .invalidAnisette:
             return "Anisette JSON 无效，请导入 SideStore/AltServer 导出的 Anisette 数据。"
+        case .noTeam:
+            return "Apple ID 未关联任何开发者团队。请确认账号已在 developer.apple.com 注册。"
+        case .certificateLimitReached:
+            return "开发者证书数量已达上限，且自动清理失败。请到 developer.apple.com 手动删除旧证书后重试。"
         }
     }
 }
@@ -28,6 +34,15 @@ struct AppleIDSession {
 struct SigningProgress {
     let completed: Int64
     let total: Int64
+}
+
+/// 签名完成后的结果。
+struct SignIPAResult {
+    let signedIPA: URL
+    let bundleID: String
+    let appName: String
+    /// provisioning profile 过期时间（免费账号 7 天后到期）。
+    let profileExpirationDate: Date?
 }
 
 final class AppleIDSigningService {
@@ -141,6 +156,224 @@ final class AppleIDSigningService {
                 completed: progress.completedUnitCount,
                 total: progress.totalUnitCount
             ))
+        }
+    }
+
+    // MARK: - 全流程签名（一键续签核心）
+
+    /// 完整的 AltSign 签名流程：认证 → 获取团队 → 创建证书 →
+    /// 解压 IPA → 注册 AppID → 获取 Profile → 签名 → 打包。
+    ///
+    /// 这是 NB助手 式「一键续签」的核心——在 App 内完成全部签名步骤，
+    /// 不依赖 SideStore。签名后的 IPA 可直接发送给安装器。
+    func signIPA(
+        ipaURL: URL,
+        appleID: String,
+        password: String,
+        anisetteJSON: [String: String],
+        verificationCode: @escaping () -> String?,
+        progressHandler: @escaping (SigningProgress) -> Void
+    ) async throws -> SignIPAResult {
+
+        // 1. 认证
+        let authSession = try await authenticate(
+            appleID: appleID,
+            password: password,
+            anisetteJSON: anisetteJSON,
+            verificationCode: verificationCode
+        )
+
+        // 2. 获取开发者团队（免费账号通常只有一个）
+        let teams = try await fetchTeamsAsync(
+            account: authSession.account,
+            session: authSession.session
+        )
+        guard let team = teams.first else {
+            throw AppleIDSigningError.noTeam
+        }
+
+        // 3. 创建开发证书（带自动清理：达上限时吊销最旧的再重试）
+        let certificate = try await fetchOrCreateCertificate(
+            team: team,
+            session: authSession.session
+        )
+
+        // 4. 解压 IPA 到临时工作目录
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SakuraDeBug-Sign-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workDir) }
+
+        let appBundleURL = try FileManager.default.unzipAppBundle(
+            at: ipaURL,
+            toDirectory: workDir
+        )
+
+        // 5. 读取 App 信息（bundleID、名称）
+        guard let application = ALTApplication(fileURL: appBundleURL) else {
+            throw AppleIDSigningError.invalidApplication
+        }
+        let bundleID = application.bundleIdentifier
+        let appName = application.name
+
+        // 6. 注册 / 查找 App ID
+        let appIDs = try await ALTAppleAPI.shared.fetchAppIDs(
+            for: team, session: authSession.session
+        )
+        let appID: ALTAppID
+        if let existing = appIDs.first(where: { $0.bundleIdentifier == bundleID }) {
+            appID = existing
+        } else {
+            appID = try await ALTAppleAPI.shared.addAppID(
+                withName: appName,
+                bundleIdentifier: bundleID,
+                team: team,
+                session: authSession.session
+            )
+        }
+
+        // 7. 获取 provisioning profile
+        let profile = try await ALTAppleAPI.shared.fetchProvisioningProfile(
+            for: appID,
+            deviceType: .iPhone,
+            team: team,
+            session: authSession.session
+        )
+
+        // 8. AltSign 签名（ldid + entitlements + mobileprovision）
+        try await sign(
+            appURL: appBundleURL,
+            team: team,
+            certificate: certificate,
+            provisioningProfiles: [profile],
+            progressHandler: progressHandler
+        )
+
+        // 9. 重新打包为 IPA
+        let signedIPA = try FileManager.default.zipAppBundle(at: appBundleURL)
+
+        return SignIPAResult(
+            signedIPA: signedIPA,
+            bundleID: bundleID,
+            appName: appName,
+            profileExpirationDate: profile.expirationDate
+        )
+    }
+
+    // MARK: - AltSign 异步包装（补全 AltSign 缺少的 async 变体）
+
+    /// fetchTeams 的 async 包装（AltSign 只提供了 completion handler 版）。
+    private func fetchTeamsAsync(
+        account: ALTAccount,
+        session: ALTAppleAPISession
+    ) async throws -> [ALTTeam] {
+        try await withCheckedThrowingContinuation { continuation in
+            ALTAppleAPI.shared.fetchTeams(
+                for: account,
+                session: session
+            ) { teams, error in
+                if let teams {
+                    continuation.resume(returning: teams)
+                } else {
+                    continuation.resume(throwing: error ?? AppleIDSigningError.noTeam)
+                }
+            }
+        }
+    }
+
+    /// addCertificate 的 async 包装。
+    private func addCertificateAsync(
+        machineName: String,
+        team: ALTTeam,
+        session: ALTAppleAPISession
+    ) async throws -> ALTCertificate {
+        try await withCheckedThrowingContinuation { continuation in
+            ALTAppleAPI.shared.addCertificate(
+                machineName: machineName,
+                to: team,
+                session: session
+            ) { certificate, error in
+                if let certificate {
+                    continuation.resume(returning: certificate)
+                } else {
+                    continuation.resume(throwing: error ?? AppleIDSigningError.certificateLimitReached)
+                }
+            }
+        }
+    }
+
+    /// fetchCertificates 的 async 包装。
+    private func fetchCertificatesAsync(
+        for team: ALTTeam,
+        session: ALTAppleAPISession
+    ) async throws -> [ALTX509Certificate] {
+        try await withCheckedThrowingContinuation { continuation in
+            ALTAppleAPI.shared.fetchCertificates(
+                for: team,
+                session: session
+            ) { certificates, error in
+                if let certificates {
+                    continuation.resume(returning: certificates)
+                } else {
+                    continuation.resume(throwing: error ?? AppleIDSigningError.certificateLimitReached)
+                }
+            }
+        }
+    }
+
+    /// revoke 的 async 包装。
+    private func revokeCertificateAsync(
+        _ certificate: ALTX509Certificate,
+        team: ALTTeam,
+        session: ALTAppleAPISession
+    ) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            ALTAppleAPI.shared.revoke(
+                certificate,
+                for: team,
+                session: session
+            ) { success, error in
+                if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: error ?? AppleIDSigningError.certificateLimitReached)
+                }
+            }
+        }
+    }
+
+    /// 创建开发证书：先尝试新建，若达上限（tooManyCertificates）则
+    /// 自动吊销最旧的证书后重试——与 AltStore/SideStore 同款策略。
+    private func fetchOrCreateCertificate(
+        team: ALTTeam,
+        session: ALTAppleAPISession
+    ) async throws -> ALTCertificate {
+        do {
+            return try await addCertificateAsync(
+                machineName: "SakuraDeBug",
+                team: team,
+                session: session
+            )
+        } catch {
+            // 检查是否为证书上限错误
+            let isLimit = (error as? ALTAppleAPIError == .tooManyCertificates)
+                || (error as NSError).domain == ALTAppleAPIErrorDomain
+                   && ALTAppleAPIError(rawValue: (error as NSError).code) == .tooManyCertificates
+
+            guard isLimit else { throw error }
+
+            // 吊销最旧的证书后重试
+            let certs = try await fetchCertificatesAsync(for: team, session: session)
+            guard let oldest = certs.min(by: { $0.creationDate < $1.creationDate }) else {
+                throw AppleIDSigningError.certificateLimitReached
+            }
+            try await revokeCertificateAsync(oldest, team: team, session: session)
+
+            return try await addCertificateAsync(
+                machineName: "SakuraDeBug",
+                team: team,
+                session: session
+            )
         }
     }
 

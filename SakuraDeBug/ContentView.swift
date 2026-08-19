@@ -40,6 +40,15 @@ struct ContentView: View {
     // Anisette 服务器（远程拉取，免去手动导入 JSON）
     @ObservedObject private var anisette = AnisetteService.shared
     @State private var isTestingAnisette = false
+    // AltSign 全流程签名 + 一键续签
+    @State private var isSigning = false
+    @State private var signError: String?
+    @State private var signedIPA: URL?
+    @State private var signingProgress: SigningProgress?
+    @State private var hasSavedCredentials = false
+    @State private var signingRecords: [SignedAppRecord] = []
+    @State private var isResigning = false
+    @State private var resignError: String?
 
     var body: some View {
         ZStack {
@@ -55,6 +64,7 @@ struct ContentView: View {
                     actionButton
                     accountSection
                     ipaSection
+                    resignSection
                     requirements
                 }
                 .padding(22)
@@ -72,6 +82,13 @@ struct ContentView: View {
                 let lines = crash.split(separator: "\n").prefix(8).map(String.init)
                 for line in lines { appendLog("   \(line)") }
                 CrashLogger.clearCrashLog()
+            }
+            // 加载已保存的凭据和签名历史
+            hasSavedCredentials = KeychainService.loadCredentials() != nil
+            signingRecords = SigningStore.shared.records
+            // 如果有保存的 Apple ID，自动填入
+            if let creds = KeychainService.loadCredentials(), appleID.isEmpty {
+                appleID = creds.appleID
             }
         }
         .onChange(of: webConsoleOn) { _, on in
@@ -433,7 +450,9 @@ struct ContentView: View {
                         self.session = nil
                         password = ""
                         authError = nil
-                        appendLog("已断开 Apple ID 连接，可重新输入账号密码")
+                        KeychainService.clearCredentials()
+                        hasSavedCredentials = false
+                        appendLog("已断开 Apple ID 连接，已清除保存的凭据")
                     }
                     .buttonStyle(.bordered).tint(.orange).controlSize(.small)
                 }
@@ -518,20 +537,111 @@ struct ContentView: View {
 
     private var ipaSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionTitle("IPA 签名", subtitle: "通过 AltSign 重签名，完成后交给安装器")
+            sectionTitle("IPA 签名", subtitle: "App 内 AltSign 全流程签名，无需依赖 SideStore")
             Button { isImportingIPA = true } label: {
                 Label(importedIPA == nil ? "选择 IPA 文件" : "重新选择 IPA", systemImage: "doc.badge.plus")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }.buttonStyle(.bordered).tint(.sakuraDeep)
             if let importedIPA {
                 Label(importedIPA.lastPathComponent, systemImage: "doc.text.fill").font(.subheadline).foregroundStyle(.sakuraInk.opacity(0.7))
-                ShareLink(item: importedIPA) {
-                    Label("发送到 SideStore", systemImage: "arrow.up.forward.app.fill").frame(maxWidth: .infinity).padding(.vertical, 5)
-                }.buttonStyle(.borderedProminent).tint(.sakuraPink)
+
+                // 签名按钮：需要已选 IPA + Anisette 数据就绪
+                Button { performSign() } label: {
+                    HStack {
+                        if isSigning {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "signature")
+                        }
+                        Text(isSigning ? "签名中…" : "签名")
+                        if let p = signingProgress, p.total > 0 {
+                            Text("\(Int(Double(p.completed) / Double(p.total) * 100))%")
+                                .font(.caption).foregroundStyle(.sakuraInk.opacity(0.6))
+                        }
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, 5)
+                }
+                .buttonStyle(.borderedProminent).tint(.sakuraPink)
+                .disabled(isSigning || !anisetteReady)
+
+                // 签名后的 IPA：发送到安装器
+                if let signedIPA {
+                    Divider()
+                    Label(signedIPA.lastPathComponent, systemImage: "checkmark.seal.fill")
+                        .font(.subheadline).foregroundStyle(.green)
+                    ShareLink(item: signedIPA) {
+                        Label("发送到 SideStore", systemImage: "arrow.up.forward.app.fill")
+                            .frame(maxWidth: .infinity).padding(.vertical, 5)
+                    }.buttonStyle(.borderedProminent).tint(.sakuraPink)
+                }
             }
             if let importError { Text(importError).font(.footnote).foregroundStyle(.red) }
+            if let signError { Text(signError).font(.footnote).foregroundStyle(.orange) }
         }.panelStyle()
     }
+
+    // MARK: - 一键续签
+
+    private var resignSection: some View {
+        Group {
+            if let last = signingRecords.first {
+                VStack(alignment: .leading, spacing: 14) {
+                    sectionTitle("一键续签", subtitle: "记住上次签名，一键重新签名——7 天到期后续签即可继续使用")
+
+                    HStack(spacing: 12) {
+                        Image(systemName: "arrow.clockwise.square.fill")
+                            .font(.title2).foregroundStyle(.sakuraPink)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(last.name).font(.headline).foregroundStyle(.sakuraInk)
+                            Text(last.bundleID).font(.caption).foregroundStyle(.sakuraInk.opacity(0.55))
+                            HStack(spacing: 8) {
+                                if let days = last.daysRemaining {
+                                    Label("\(days) 天", systemImage: days > 2 ? "calendar" : "calendar.badge.exclamationmark")
+                                        .font(.caption2)
+                                        .foregroundStyle(days > 2 ? .green : .orange)
+                                }
+                                Text("签名于 \(Self.dateFormatter.string(from: last.signedAt))")
+                                    .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.5))
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+
+                    Button { performResign() } label: {
+                        HStack {
+                            if isResigning {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            Text(isResigning ? "续签中…" : "一键续签")
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 5)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.sakuraPink)
+                    .disabled(isResigning || !anisetteReady)
+
+                    // 续签后输出
+                    if let signedIPA, isResigning == false && resignError == nil {
+                        ShareLink(item: signedIPA) {
+                            Label("发送续签后的 IPA 到 SideStore", systemImage: "arrow.up.forward.app.fill")
+                                .frame(maxWidth: .infinity).padding(.vertical, 5)
+                        }.buttonStyle(.borderedProminent).tint(.sakuraPink)
+                    }
+                    if let resignError { Text(resignError).font(.footnote).foregroundStyle(.orange) }
+                }
+                .panelStyle()
+            }
+        }
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f
+    }()
 
     private var requirements: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -656,9 +766,163 @@ struct ContentView: View {
                     // 开了双重认证的账号：先填验证码再点连接（与 AltSign/Xcode 原版逻辑一致）。
                     verificationCode.isEmpty ? nil : verificationCode
                 }
-                await MainActor.run { session = authenticatedSession; password = ""; isAuthenticating = false }
+                await MainActor.run {
+                    session = authenticatedSession
+                    // 认证成功后自动保存凭据（Keychain 加密存储），供一键续签复用
+                    KeychainService.saveCredentials(appleID: appleID, password: password)
+                    hasSavedCredentials = true
+                    password = ""
+                    isAuthenticating = false
+                }
             } catch {
                 await MainActor.run { authError = error.localizedDescription; isAuthenticating = false }
+            }
+        }
+    }
+
+    // MARK: - 签名与一键续签
+
+    /// Anisette 数据是否就绪（签名前置条件）。
+    private var anisetteReady: Bool {
+        anisette.enabled
+            ? !anisette.serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+            : anisetteJSON != nil
+    }
+
+    /// 获取 Anisette 数据（服务器模式实时拉取，文件模式用已导入 JSON）。
+    private func fetchAnisetteData() async throws -> [String: String] {
+        if anisette.enabled {
+            return try await anisette.fetchAnisette()
+        } else {
+            guard let json = anisetteJSON else {
+                throw NSError(domain: "SakuraDeBug", code: 20,
+                              userInfo: [NSLocalizedDescriptionKey: "请先准备 Anisette 数据"])
+            }
+            return json
+        }
+    }
+
+    /// 执行完整签名流程（选 IPA → 签名 → 输出）。
+    private func performSign() {
+        guard let ipa = importedIPA else { return }
+
+        // 密码可能在认证成功后被清空，从 Keychain 加载
+        let signingID: String
+        let signingPW: String
+        if password.isEmpty, let creds = KeychainService.loadCredentials() {
+            signingID = creds.appleID
+            signingPW = creds.password
+        } else {
+            signingID = appleID
+            signingPW = password
+        }
+        guard !signingID.isEmpty, !signingPW.isEmpty else {
+            signError = "请先连接 Apple ID 或输入账号密码。"
+            return
+        }
+
+        isSigning = true
+        signError = nil
+        signedIPA = nil
+
+        Task {
+            do {
+                let anisetteData = try await fetchAnisetteData()
+                let result = try await AppleIDSigningService().signIPA(
+                    ipaURL: ipa,
+                    appleID: signingID,
+                    password: signingPW,
+                    anisetteJSON: anisetteData,
+                    verificationCode: {
+                        verificationCode.isEmpty ? nil : verificationCode
+                    },
+                    progressHandler: { p in
+                        Task { @MainActor in signingProgress = p }
+                    }
+                )
+                await MainActor.run {
+                    signedIPA = result.signedIPA
+                    isSigning = false
+                    signingProgress = nil
+                    appendLog("✅ 签名成功：\(result.appName) (\(result.bundleID))")
+                    // 保存到签名历史
+                    SigningStore.shared.saveRecord(
+                        signedIPA: result.signedIPA,
+                        bundleID: result.bundleID,
+                        name: result.appName,
+                        appleID: signingID,
+                        profileExpiration: result.profileExpirationDate
+                    )
+                    signingRecords = SigningStore.shared.records
+                }
+            } catch {
+                await MainActor.run {
+                    signError = error.localizedDescription
+                    isSigning = false
+                    signingProgress = nil
+                    appendLog("❌ 签名失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// 一键续签：加载上次签名的 IPA + 已保存凭据，自动重签名。
+    /// 2FA 账号：首次续签会失败提示输入验证码，用户填后再次点击即可。
+    private func performResign() {
+        guard let record = signingRecords.first else { return }
+        guard let creds = KeychainService.loadCredentials() else {
+            resignError = "未找到已保存的凭据，请先在 Apple ID 栏重新认证。"
+            return
+        }
+
+        isResigning = true
+        resignError = nil
+        signedIPA = nil
+
+        Task {
+            do {
+                let anisetteData = try await fetchAnisetteData()
+                let result = try await AppleIDSigningService().signIPA(
+                    ipaURL: record.ipaURL,
+                    appleID: creds.appleID,
+                    password: creds.password,
+                    anisetteJSON: anisetteData,
+                    verificationCode: {
+                        verificationCode.isEmpty ? nil : verificationCode
+                    },
+                    progressHandler: { p in
+                        Task { @MainActor in signingProgress = p }
+                    }
+                )
+                await MainActor.run {
+                    signedIPA = result.signedIPA
+                    isResigning = false
+                    signingProgress = nil
+                    appendLog("✅ 续签成功：\(result.appName)")
+                    SigningStore.shared.saveRecord(
+                        signedIPA: result.signedIPA,
+                        bundleID: result.bundleID,
+                        name: result.appName,
+                        appleID: creds.appleID,
+                        profileExpiration: result.profileExpirationDate
+                    )
+                    signingRecords = SigningStore.shared.records
+                }
+            } catch {
+                await MainActor.run {
+                    // 2FA 账号特殊处理：提示用户输入验证码
+                    let msg = error.localizedDescription
+                    if msg.contains("双重认证") || msg.contains("验证码") {
+                        resignError = "需要双重认证验证码：请在上方 Apple ID 栏输入验证码后再次点击「一键续签」。"
+                    } else {
+                        resignError = msg
+                    }
+                    isResigning = false
+                    signingProgress = nil
+                    SigningStore.shared.markLastSignFailed()
+                    signingRecords = SigningStore.shared.records
+                    appendLog("❌ 续签失败：\(msg)")
+                }
             }
         }
     }
