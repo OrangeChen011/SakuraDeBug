@@ -37,6 +37,9 @@ struct ContentView: View {
     // 局域网网页控制台
     @State private var webConsoleOn = false
     @StateObject private var webConsole = WebConsoleServer.shared
+    // Anisette 服务器（远程拉取，免去手动导入 JSON）
+    @ObservedObject private var anisette = AnisetteService.shared
+    @State private var isTestingAnisette = false
 
     var body: some View {
         ZStack {
@@ -442,15 +445,76 @@ struct ContentView: View {
                     Label(isAuthenticating ? "认证中..." : "连接 Apple ID", systemImage: "person.badge.key.fill").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent).tint(.sakuraPink)
-                .disabled(isAuthenticating || appleID.isEmpty || password.isEmpty || anisetteJSON == nil)
+                .disabled(isAuthenticating || appleID.isEmpty || password.isEmpty || (anisette.enabled ? anisette.serverURL.trimmingCharacters(in: .whitespaces).isEmpty : anisetteJSON == nil))
             }
-            Button { isImportingAnisette = true } label: {
-                Label(anisetteJSON == nil ? "导入 Anisette JSON" : "重新导入 Anisette", systemImage: "arrow.down.doc.fill")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }.buttonStyle(.bordered).tint(.sakuraDeep)
+            anisetteSection
             if let authError { Text(authError).font(.footnote).foregroundStyle(.orange) }
         }.panelStyle()
     }
+
+    /// Anisette 数据来源面板：服务器（远程拉取）或文件（手动导入），二选一。
+    /// 服务器模式下认证时自动从配置的 URL 实时拉取最新数据，免去每次导出。
+    private var anisetteSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Anisette 来源", subtitle: "Apple ID 认证必需；服务器模式自动拉取，文件模式需手动导入")
+
+            Picker("来源", selection: $anisette.enabled) {
+                Text("文件导入").tag(false)
+                Text("服务器").tag(true)
+            }
+            .pickerStyle(.segmented)
+
+            if anisette.enabled {
+                // 服务器模式：URL 输入 + 启用提示 + 测试连接
+                TextField("Anisette 服务器 URL", text: $anisette.serverURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .inputStyle()
+
+                HStack(spacing: 10) {
+                    Button {
+                        Task {
+                            isTestingAnisette = true
+                            await anisette.testConnection()
+                            isTestingAnisette = false
+                        }
+                    } label: {
+                        Label(isTestingAnisette ? "测试中..." : "测试连接", systemImage: "antenna.radiowaves.left.and.right")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered).tint(.sakuraDeep)
+                    .disabled(isTestingAnisette || anisette.serverURL.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                    if let last = anisette.lastFetchDate {
+                        Label("上次拉取 \(Self.timeFormatter.string(from: last))", systemImage: "checkmark.clock")
+                            .font(.caption2).foregroundStyle(.green)
+                    }
+                }
+
+                if let err = anisette.lastError, let last = anisette.lastFetchDate, Date().timeIntervalSince(last) >= 60 {
+                    Text("⚠️ \(err)").font(.caption2).foregroundStyle(.orange)
+                } else if let err = anisette.lastError, anisette.lastFetchDate == nil {
+                    Text("⚠️ \(err)").font(.caption2).foregroundStyle(.orange)
+                }
+
+                Text("提示：公共服务器易被 Apple 风控，建议自建或用可信私有地址。OTP 每次认证时实时拉取。")
+                    .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.55))
+            } else {
+                // 文件模式：沿用旧的手动导入流程
+                Button { isImportingAnisette = true } label: {
+                    Label(anisetteJSON == nil ? "导入 Anisette JSON" : "重新导入 Anisette", systemImage: "arrow.down.doc.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.bordered).tint(.sakuraDeep)
+            }
+        }
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
 
     private var ipaSection: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -574,11 +638,20 @@ struct ContentView: View {
     }
 
     private func authenticate() {
-        guard let anisetteJSON else { return }
         isAuthenticating = true; authError = nil
         Task {
             do {
-                let authenticatedSession = try await AppleIDSigningService().authenticate(appleID: appleID, password: password, anisetteJSON: anisetteJSON) {
+                // Anisette 数据来源：服务器模式实时拉取，文件模式用已导入的 JSON。
+                // 服务器模式每次都重新拉取——OTP 每 30s 轮换，缓存会导致 -72000。
+                let anisetteData: [String: String]
+                if anisette.enabled {
+                    anisetteData = try await anisette.fetchAnisette()
+                } else {
+                    guard let json = anisetteJSON else { return }
+                    anisetteData = json
+                }
+
+                let authenticatedSession = try await AppleIDSigningService().authenticate(appleID: appleID, password: password, anisetteJSON: anisetteData) {
                     // 同步快照验证码：AppleIDSigningService 保证本闭包只在 MainActor 上调用。
                     // 开了双重认证的账号：先填验证码再点连接（与 AltSign/Xcode 原版逻辑一致）。
                     verificationCode.isEmpty ? nil : verificationCode
