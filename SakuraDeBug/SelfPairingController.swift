@@ -136,7 +136,7 @@ final class SelfPairingController: ObservableObject {
                     self.deviceName = deviceName
                     self.deviceUDID = deviceUDID
                     self.phase = .success
-                    self.log("🎉 配对成功！设备：\(deviceName.isEmpty ? "未知" : deviceName)（\(deviceUDID)），配对文件已生成")
+                    self.log("配对成功！设备：\(deviceName.isEmpty ? "未知" : deviceName)（\(deviceUDID)），配对文件已生成")
                 } else {
                     let msg = errorMsg.isEmpty ? "配对失败（code \(rc)）" : errorMsg
                     self.phase = .failed(msg)
