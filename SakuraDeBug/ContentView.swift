@@ -37,8 +37,6 @@ struct ContentView: View {
     // 局域网网页控制台
     @State private var webConsoleOn = false
     @StateObject private var webConsole = WebConsoleServer.shared
-    // 内嵌 LocalDevVPN（回环隧道，免装 App Store 版 LocalDevVPN）
-    @ObservedObject private var vpn = LocalDevVPNManager.shared
     // Anisette 服务器（远程拉取，免去手动导入 JSON）
     @ObservedObject private var anisette = AnisetteService.shared
     @State private var isTestingAnisette = false
@@ -78,11 +76,6 @@ struct ContentView: View {
             selfPairing.onLog = { line in
                 appendLog(line)
             }
-            // 内嵌 LocalDevVPN 日志接入
-            vpn.onLog = { line in
-                appendLog(line)
-            }
-            vpn.refreshStatus()
             // 上次崩溃残留：提示用户，便于闪退后拿到堆栈定位
             if let crash = CrashLogger.lastCrashLog() {
                 appendLog("⚠️ 检测到上次崩溃记录，详情已写入 Documents/crash.log（文件共享可导出）：")
@@ -166,8 +159,7 @@ struct ContentView: View {
 
     private var jitSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionTitle("开启 JIT", subtitle: "通过配对文件 + 内嵌 LocalDevVPN 回环隧道附加调试器")
-            vpnRow
+            sectionTitle("开启 JIT", subtitle: "通过配对文件 + LocalDevVPN 回环隧道附加调试器")
             pairingRow
             selfPairingRow
             webConsoleRow
@@ -177,7 +169,7 @@ struct ContentView: View {
                 Text(appsError).font(.footnote).foregroundStyle(.orange)
             }
             if apps.isEmpty && !isRefreshingApps {
-                Text("尚未加载 App 列表。请先导入配对文件并开启上方回环隧道，然后点击刷新。")
+                Text("尚未加载 App 列表。请先导入配对文件并开启 LocalDevVPN，然后点击刷新。")
                     .font(.footnote).foregroundStyle(.sakuraInk.opacity(0.5))
             }
             appList
@@ -189,97 +181,6 @@ struct ContentView: View {
             }
         }
         .panelStyle()
-    }
-
-    // MARK: - 内嵌 LocalDevVPN 面板
-
-    private var vpnRow: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Label("内嵌 LocalDevVPN", systemImage: "arrow.triangle.2.circlepath.circle.fill")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.sakuraDeep)
-                Spacer(minLength: 0)
-                vpnStatusBadge
-            }
-
-            switch vpn.status {
-            case .notInstalled:
-                Text("开启回环隧道（10.7.0.1 → 127.0.0.1），无需再从 App Store 安装 LocalDevVPN。首次开启会弹出系统「添加 VPN 配置」授权，请选择「允许」。")
-                    .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.6))
-                Button {
-                    vpn.enable()
-                } label: {
-                    Label("开启回环隧道", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent).tint(.sakuraPink)
-
-            case .installing:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("等待系统 VPN 授权弹窗确认…")
-                        .font(.caption).foregroundStyle(.sakuraInk.opacity(0.7))
-                }
-
-            case .installed, .disconnecting:
-                Text("回环隧道已就绪但未连接，点击连接后即可开始 JIT 流程。")
-                    .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.6))
-                Button {
-                    vpn.enable()
-                } label: {
-                    Label("连接回环隧道", systemImage: "bolt.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent).tint(.sakuraPink)
-
-            case .connecting:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("回环隧道连接中…")
-                        .font(.caption).foregroundStyle(.sakuraInk.opacity(0.7))
-                }
-
-            case .connected:
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("回环隧道工作中：10.7.0.1 的连接已转发到本机 127.0.0.1", systemImage: "checkmark.seal.fill")
-                        .font(.caption.bold()).foregroundStyle(.green)
-                    Button {
-                        vpn.disable()
-                    } label: {
-                        Label("关闭回环隧道", systemImage: "stop.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered).tint(.orange).controlSize(.small)
-                }
-
-            case .error(let message):
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(message).font(.footnote).foregroundStyle(.red)
-                    Button("重试") { vpn.enable() }
-                        .buttonStyle(.bordered).tint(.sakuraPink).controlSize(.small)
-                }
-            }
-        }
-        .padding(12)
-        .background(.white.opacity(0.5), in: RoundedRectangle(cornerRadius: 13))
-    }
-
-    private var vpnStatusBadge: some View {
-        let (text, color): (String, Color) = {
-            switch vpn.status {
-            case .connected: return ("已连接", .green)
-            case .connecting, .installing: return ("连接中", .orange)
-            case .installed, .disconnecting: return ("已安装", .orange)
-            case .notInstalled: return ("未开启", .gray)
-            case .error: return ("错误", .red)
-            }
-        }()
-        return Text(text)
-            .font(.caption2.bold())
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(color.opacity(0.15), in: Capsule())
-            .foregroundStyle(color)
     }
 
     private var pairingRow: some View {
@@ -448,7 +349,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("使用前提", systemImage: "list.clipboard.fill")
                 .font(.caption).foregroundStyle(.sakuraInk.opacity(0.55))
-            Text("① 开启上方「内嵌 LocalDevVPN」回环隧道（\(DeviceConnectionContext.defaultTargetIPAddress) → 127.0.0.1，无需另装 App）")
+            Text("① 设备安装并开启 LocalDevVPN（App Store 免费，回环地址 \(DeviceConnectionContext.defaultTargetIPAddress)）")
                 .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.7))
             Text("② 目标 App 必须携带 get-task-allow（用下方 Apple ID 签名 / 开发者签名产出的即可）")
                 .font(.caption2).foregroundStyle(.sakuraInk.opacity(0.7))
@@ -746,7 +647,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             sectionTitle("使用条件", subtitle: "这些条件由 iOS 和 Apple Developer 共同决定")
             requirement("目标 App 带 get-task-allow entitlement", icon: "signature")
-            requirement("内嵌 LocalDevVPN 回环隧道已开启", icon: "network")
+            requirement("LocalDevVPN 回环隧道已开启", icon: "network")
             requirement("配对文件与设备匹配（.mobiledevicepairing）", icon: "key.fill")
             requirement("iOS 26 需保持 VPN 常开，否则 JIT 可能失效", icon: "exclamationmark.triangle.fill")
         }.panelStyle()
@@ -790,9 +691,6 @@ struct ContentView: View {
             appsError = "请先导入配对文件。"
             return
         }
-        if !vpn.isReady {
-            appendLog("⚠️ 内嵌 LocalDevVPN 回环隧道未连接，App 列表刷新大概率会失败。建议先在上方开启回环隧道。")
-        }
         isRefreshingApps = true
         appsError = nil
         appendLog("刷新 App 列表…")
@@ -820,10 +718,6 @@ struct ContentView: View {
         guard hasPairingFile else {
             appendLog("❌ 请先导入配对文件")
             return
-        }
-        if !vpn.isReady {
-            appendLog("⚠️ 回环隧道未连接，正在自动开启内嵌 LocalDevVPN…")
-            vpn.enable()
         }
         activeJITBundleID = bundleID
         Task.detached(priority: .userInitiated) {
