@@ -1,8 +1,7 @@
 <p align="center">
   <img src="SakuraDeBug/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="160" alt="SakuraDeBug">
+  <h1>SakuraDeBug</h1>
 </p>
-
-# SakuraDeBug 🌸
 
 一个樱花风格的 iOS JIT 调试工具（macOS）。
 
